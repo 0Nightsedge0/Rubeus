@@ -332,18 +332,18 @@ namespace Rubeus
                 {
                     if (userName.Contains(","))
                     {
-                        // searching for multiple specified users, ensuring they're not disabled accounts
+                        // searching for multiple specified users, not to ensure they're not disabled accounts
                         string userPart = "";
                         foreach (string user in userName.Split(','))
                         {
                             userPart += String.Format("(samAccountName={0})", user);
                         }
-                        userFilter = String.Format("(&(|{0})(!(UserAccountControl:1.2.840.113556.1.4.803:=2)))", userPart);
+                        userFilter = String.Format("(&(|{0}))", userPart);
                     }
                     else
                     {
-                        // searching for a specified user, ensuring it's not a disabled account
-                        userFilter = String.Format("(samAccountName={0})(!(UserAccountControl:1.2.840.113556.1.4.803:=2))", userName);
+                        // searching for a specified user, not to ensure it's not a disabled account
+                        userFilter = String.Format("(samAccountName={0})", userName);
                     }
                 }
                 else
