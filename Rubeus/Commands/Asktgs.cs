@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using Rubeus.lib.Interop;
 
 
 namespace Rubeus.Commands
@@ -27,9 +28,25 @@ namespace Rubeus.Commands
             bool u2u = false;
             string targetUser = "";
             bool printargs = false;
-
+            bool keyList = false;
             string proxyUrl = null;
+            bool dmsa = false;
+            string serviceType = "srv_inst";
 
+            LUID targetLuid = new LUID();
+            if (arguments.ContainsKey("/luid")) {
+                try {
+                    targetLuid = new LUID(arguments["/luid"]);
+                } catch {
+                    Console.WriteLine("[X] Invalid LUID format ({0})\r\n", arguments["/luid"]);
+                    return;
+                }
+            }
+
+            if (arguments.ContainsKey("/keyList"))
+            {
+                keyList = true;
+            }
             if (arguments.ContainsKey("/outfile"))
             {
                 outfile = arguments["/outfile"];
@@ -98,6 +115,10 @@ namespace Rubeus.Commands
                 return;
             }
 
+            if (arguments.ContainsKey("/servicetype")) {
+                serviceType = arguments["/servicetype"];
+            }
+
             if (arguments.ContainsKey("/servicekey")) {
                 servicekey = arguments["/servicekey"];
             }
@@ -156,6 +177,11 @@ namespace Rubeus.Commands
                 proxyUrl = arguments["/proxyurl"];
             }
 
+            if (arguments.ContainsKey("/dmsa"))
+            {
+                dmsa = true;
+            }
+
             if (arguments.ContainsKey("/ticket"))
             {
                 string kirbi64 = arguments["/ticket"];
@@ -164,14 +190,14 @@ namespace Rubeus.Commands
                 {
                     byte[] kirbiBytes = Convert.FromBase64String(kirbi64);
                     KRB_CRED kirbi = new KRB_CRED(kirbiBytes);
-                    Ask.TGS(kirbi, service, requestEnctype, outfile, ptt, dc, true, enterprise, false, opsec, tgs, targetDomain, servicekey, asrepkey, u2u, targetUser, printargs, proxyUrl);
+                    Ask.TGS(kirbi, service, requestEnctype, outfile, ptt, dc, true, enterprise, false, opsec, tgs, targetDomain, servicekey, asrepkey, u2u, targetUser, printargs, proxyUrl, keyList, dmsa, serviceType, default);
                     return;
                 }
                 else if (File.Exists(kirbi64))
                 {
                     byte[] kirbiBytes = File.ReadAllBytes(kirbi64);
                     KRB_CRED kirbi = new KRB_CRED(kirbiBytes);
-                    Ask.TGS(kirbi, service, requestEnctype, outfile, ptt, dc, true, enterprise, false, opsec, tgs, targetDomain, servicekey, asrepkey, u2u, targetUser, printargs, proxyUrl);
+                    Ask.TGS(kirbi, service, requestEnctype, outfile, ptt, dc, true, enterprise, false, opsec, tgs, targetDomain, servicekey, asrepkey, u2u, targetUser, printargs, proxyUrl, keyList, dmsa, serviceType, default);
                     return;
                 }
                 else
@@ -182,8 +208,10 @@ namespace Rubeus.Commands
             }
             else
             {
-                Console.WriteLine("\r\n[X] A /ticket:X needs to be supplied!\r\n");
-                return;
+                if(arguments.ContainsKey("/user") || arguments.ContainsKey("/password") || arguments.ContainsKey("/dc") || arguments.ContainsKey("/u2u") || arguments.ContainsKey("/tgs"))
+                    Console.WriteLine("\r\n[X] A /ticket:X needs to be supplied!\r\n");
+                else
+                    Ask.TGS(null, service, requestEnctype, outfile, ptt, dc, true, enterprise, false, opsec, tgs, targetDomain, servicekey, asrepkey, u2u, targetUser, printargs, proxyUrl, keyList, dmsa, serviceType, targetLuid);
             }
         }
     }

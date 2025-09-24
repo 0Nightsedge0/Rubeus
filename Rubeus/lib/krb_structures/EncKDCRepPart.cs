@@ -59,7 +59,7 @@ namespace Rubeus
                         renew_till = s.Sub[0].GetTime();
                         break;
                     case 9:
-                        realm = Encoding.ASCII.GetString(s.Sub[0].GetOctetString());
+                        realm = Encoding.UTF8.GetString(s.Sub[0].GetOctetString());
                         break;
                     case 10:
                         // sname (optional)
@@ -69,7 +69,7 @@ namespace Rubeus
                         // HostAddresses, skipped for now
                         break;
                     case 12:
-                        // encrypted-pa-data, skipped for now
+                        encryptedPaData = new EncryptedPAData(s.Sub[0]);
                         break;
                     default:
                         break;
@@ -102,7 +102,7 @@ namespace Rubeus
         public PrincipalName sname { get; set; }
 
         // caddr (optional) - skip for now
-        
-        // encrypted-pa-data (optional) - skip for now
+
+        public EncryptedPAData encryptedPaData { get; set; }
     }
 }

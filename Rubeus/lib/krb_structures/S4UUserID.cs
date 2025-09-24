@@ -17,17 +17,34 @@ namespace Rubeus
 
     public class S4UUserID
     {
-        public S4UUserID(string name, string realm, uint n)
+        public S4UUserID(string name, string realm, uint n, bool dmsa = false)
         {
             nonce = n;
 
             cname = new PrincipalName(name);
-            cname.name_type = Interop.PRINCIPAL_TYPE.NT_ENTERPRISE;
+            // DMSA Requests do not work with NT_ENTERPRISE, force NT_PRINCIPAL.
+            if (dmsa)
+            {
+                cname.name_type = Interop.PRINCIPAL_TYPE.NT_PRINCIPAL;
+            }
+            else
+            {
+                cname.name_type = Interop.PRINCIPAL_TYPE.NT_ENTERPRISE;
+            }
+
 
             crealm = realm;
 
             // default for creation
             options = Interop.PA_S4U_X509_USER_OPTIONS.SIGN_REPLY;
+
+            if (dmsa)
+            {
+                // add unconditional_delegation
+                options |= Interop.PA_S4U_X509_USER_OPTIONS.UNCONDITIONAL_DELEGATION;
+            }
+            
+            
         }
 
         public AsnElt Encode()
@@ -46,7 +63,7 @@ namespace Rubeus
             allNodes.Add(cnameElt);
 
             // crealm                  [2] Realm
-            AsnElt realmAsn = AsnElt.MakeString(AsnElt.IA5String, crealm);
+            AsnElt realmAsn = AsnElt.MakeString(AsnElt.UTF8String, crealm);
             realmAsn = AsnElt.MakeImplicit(AsnElt.UNIVERSAL, AsnElt.GeneralString, realmAsn);
             AsnElt realmSeq = AsnElt.Make(AsnElt.SEQUENCE, new[] { realmAsn });
             realmSeq = AsnElt.MakeImplicit(AsnElt.CONTEXT, 2, realmSeq);

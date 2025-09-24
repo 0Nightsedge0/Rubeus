@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using static Rubeus.Interop;
 
 namespace Rubeus
 {
@@ -20,7 +21,7 @@ namespace Rubeus
 
     public class TGS_REQ
     {
-        public static byte[] NewTGSReq(string userName, string domain, string sname, Ticket providedTicket, byte[] clientKey, Interop.KERB_ETYPE paEType, Interop.KERB_ETYPE requestEType = Interop.KERB_ETYPE.subkey_keymaterial, bool renew = false, string s4uUser = "", bool enterprise = false, bool roast = false, bool opsec = false, bool unconstrained = false, KRB_CRED tgs = null, string targetDomain = "", bool u2u = false)
+        public static byte[] NewTGSReq(string userName, string domain, string sname, Ticket providedTicket, byte[] clientKey, Interop.KERB_ETYPE paEType, Interop.KERB_ETYPE requestEType = Interop.KERB_ETYPE.subkey_keymaterial, bool renew = false, string s4uUser = "", bool enterprise = false, bool roast = false, bool opsec = false, bool unconstrained = false, KRB_CRED tgs = null, string targetDomain = "", bool u2u = false, bool keyList = false, bool dmsa = false, string serviceType = "principal")
         {
             TGS_REQ req;
             if (u2u)
@@ -66,7 +67,7 @@ namespace Rubeus
             }
 
             // the realm (domain) the user exists in
-            req.req_body.realm = targetDomain.ToUpper();
+            req.req_body.realm = targetDomain.ToUpperInvariant();
 
             // add in our encryption types
             if (requestEType == Interop.KERB_ETYPE.subkey_keymaterial)
@@ -102,9 +103,18 @@ namespace Rubeus
                     req.req_body.sname.name_string.Add(sname);
                     req.req_body.sname.name_type = Interop.PRINCIPAL_TYPE.NT_UNKNOWN;
                 }
+                else if (dmsa)
+                {
+                    // Add each part to the namestring. Format should be KRBTGT/DomainFQDN.
+                    foreach (string part in parts)
+                    {
+                        req.req_body.sname.name_string.Add(part);
+                    }
+                    req.req_body.sname.name_type = Interop.PRINCIPAL_TYPE.NT_SRV_INST;
+                }
                 else
                 {
-                    req.req_body.sname.name_type = Interop.PRINCIPAL_TYPE.NT_PRINCIPAL;
+                    req.req_body.sname.name_type = Helpers.StringToPrincipalType(serviceType); 
                     req.req_body.sname.name_string.Add(userName);
                 }
 
@@ -181,6 +191,11 @@ namespace Rubeus
                 }
             }
 
+            if (keyList)
+            {
+                req.req_body.kdcOptions = Interop.KdcOptions.CANONICALIZE;
+            }
+
             // needed for authenticator checksum
             byte[] cksum_Bytes = null;
 
@@ -195,17 +210,16 @@ namespace Rubeus
                     req.req_body.kdcOptions = req.req_body.kdcOptions | Interop.KdcOptions.FORWARDED;
 
                 // get hostname and hostname of SPN
-                string hostName = Dns.GetHostName().ToUpper();
+                string hostName = Dns.GetHostName().ToUpperInvariant();
                 string targetHostName;
-                if (parts.Length > 1)
+                if (parts.Length > 1 && parts[1].Contains("."))
                 {
-                    targetHostName = parts[1].Substring(0, parts[1].IndexOf('.')).ToUpper();
+                    targetHostName = parts[1].Substring(0, parts[1].IndexOf('.')).ToUpperInvariant();
                 }
                 else
                 {
                     targetHostName = hostName;
                 }
-
                 // create enc-authorization-data if target host is not the local machine
                 if ((hostName != targetHostName) && String.IsNullOrEmpty(s4uUser) && (!unconstrained))
                 {
@@ -225,7 +239,7 @@ namespace Rubeus
                 if (!String.IsNullOrEmpty(s4uUser))
                 {
                     DateTime till = DateTime.Now;
-                    till = till.AddMinutes(15);
+                    till = till.AddMinutes(15).ToUniversalTime();
                     req.req_body.till = till;
                 }
 
@@ -234,13 +248,20 @@ namespace Rubeus
                 AsnElt req_Body_ASNSeq = AsnElt.Make(AsnElt.SEQUENCE, new[] { req_Body_ASN });
                 req_Body_ASNSeq = AsnElt.MakeImplicit(AsnElt.CONTEXT, 4, req_Body_ASNSeq);
                 byte[] req_Body_Bytes = req_Body_ASNSeq.CopyValue();
-                cksum_Bytes = Crypto.KerberosChecksum(clientKey, req_Body_Bytes, Interop.KERB_CHECKSUM_ALGORITHM.KERB_CHECKSUM_RSA_MD5);
+                Interop.KERB_CHECKSUM_ALGORITHM checkSumType = Interop.KERB_CHECKSUM_ALGORITHM.KERB_CHECKSUM_RSA_MD5;
+                cksum_Bytes = Crypto.KerberosChecksum(clientKey, req_Body_Bytes, checkSumType, Interop.KRB_KEY_USAGE_TGS_REQ_CHECKSUM);
             }
 
             // create the PA-DATA that contains the AP-REQ w/ appropriate authenticator/etc.
             PA_DATA padata = new PA_DATA(domain, userName, providedTicket, clientKey, paEType, opsec, cksum_Bytes);
             req.padata.Add(padata);
 
+            // Add PA-DATA for KeyList request
+            if (keyList)
+            {
+                PA_DATA keyListPaData = new PA_DATA(Interop.KERB_ETYPE.rc4_hmac);
+                req.padata.Add(keyListPaData);
+            }
 
             // moved so all PA-DATA sections are inserted after the request body has been completed, this is useful when
             // forming opsec requests as they require a checksum of the request body within the authenticator and the 
@@ -248,15 +269,15 @@ namespace Rubeus
             if (opsec && (!String.IsNullOrEmpty(s4uUser)))
             {
                 // real packets seem to lowercase the domain in these 2 PA_DATA's
-                domain = domain.ToLower();
+                domain = domain.ToLowerInvariant();
 
                 // PA_S4U_X509_USER commented out until we get the checksum working
-                PA_DATA s4upadata = new PA_DATA(clientKey, s4uUser, domain, req.req_body.nonce, paEType);
+                PA_DATA s4upadata = new PA_DATA(clientKey, s4uUser, domain, req.req_body.nonce, paEType, dmsa);
                 req.padata.Add(s4upadata);
             }
 
-            // add final S4U PA-DATA
-            if (!String.IsNullOrEmpty(s4uUser))
+            // add final S4U PA-DATA when not a DMSA request as DMSA only uses the PA_S4U_X509_USER
+            if (!String.IsNullOrEmpty(s4uUser) && !dmsa)
             {
                 // constrained delegation yo'
                 PA_DATA s4upadata = new PA_DATA(clientKey, s4uUser, domain);

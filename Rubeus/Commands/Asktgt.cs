@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using Rubeus.lib.Interop;
 
 
@@ -22,6 +23,7 @@ namespace Rubeus.Commands
             string outfile = "";
             string certificate = "";
             string servicekey = "";
+            string principalType = "principal";
             
             bool ptt = false;
             bool opsec = false;
@@ -31,8 +33,11 @@ namespace Rubeus.Commands
             bool pac = true;
             LUID luid = new LUID();
             Interop.KERB_ETYPE encType = Interop.KERB_ETYPE.subkey_keymaterial;
+            Interop.KERB_ETYPE suppEncType = Interop.KERB_ETYPE.subkey_keymaterial;
 
             string proxyUrl = null;
+            string service = null;
+            bool nopreauth = arguments.ContainsKey("/nopreauth");
 
             if (arguments.ContainsKey("/user"))
             {
@@ -74,25 +79,34 @@ namespace Rubeus.Commands
                     encType = Interop.KERB_ETYPE.des_cbc_md5;
                 }
             }
+            if (String.IsNullOrEmpty(domain))
+            {
+                domain = System.DirectoryServices.ActiveDirectory.Domain.GetCurrentDomain().Name;
+
+                Console.WriteLine("[*] Got domain: {0}", domain);
+            }
 
             if (arguments.ContainsKey("/password"))
             {
                 password = arguments["/password"];
 
-                string salt = String.Format("{0}{1}", domain.ToUpper(), user);
+                string salt = String.Format("{0}{1}", domain.ToUpperInvariant(), user);
 
                 // special case for computer account salts
                 if (user.EndsWith("$"))
                 {
-                    salt = String.Format("{0}host{1}.{2}", domain.ToUpper(), user.TrimEnd('$').ToLower(), domain.ToLower());
+                    salt = String.Format("{0}host{1}.{2}", domain.ToUpperInvariant(), user.TrimEnd('$').ToLowerInvariant(), domain.ToLowerInvariant());
                 }
 
                 // special case for samaccountname spoofing to support Kerberos AES Encryption
                 if (arguments.ContainsKey("/oldsam"))
                 {
-                    salt = String.Format("{0}host{1}.{2}", domain.ToUpper(), arguments["/oldsam"].TrimEnd('$').ToLower(), domain.ToLower());
+                    salt = String.Format("{0}host{1}.{2}", domain.ToUpperInvariant(), arguments["/oldsam"].TrimEnd('$').ToLowerInvariant(), domain.ToLowerInvariant());
 
                 }
+
+                if (encType != Interop.KERB_ETYPE.rc4_hmac)
+                    Console.WriteLine("[*] Using salt: {0}", salt);
 
                 hash = Crypto.KerberosPasswordHash(encType, password, salt);
             }
@@ -165,6 +179,10 @@ namespace Rubeus.Commands
             {
                 proxyUrl = arguments["/proxyurl"];
             }
+            if (arguments.ContainsKey("/service"))
+            {
+                service = arguments["/service"];
+            }
 
             if (arguments.ContainsKey("/luid"))
             {
@@ -177,6 +195,35 @@ namespace Rubeus.Commands
                     Console.WriteLine("[X] Invalid LUID format ({0})\r\n", arguments["/luid"]);
                     return;
                 }
+            }
+
+            if (arguments.ContainsKey("/suppenctype"))
+            {
+                string encTypeString = arguments["/suppenctype"].ToUpper();
+
+                if (encTypeString.Equals("RC4") || encTypeString.Equals("NTLM"))
+                {
+                    suppEncType = Interop.KERB_ETYPE.rc4_hmac;
+                }
+                else if (encTypeString.Equals("AES128"))
+                {
+                    suppEncType = Interop.KERB_ETYPE.aes128_cts_hmac_sha1;
+                }
+                else if (encTypeString.Equals("AES256") || encTypeString.Equals("AES"))
+                {
+                    suppEncType = Interop.KERB_ETYPE.aes256_cts_hmac_sha1;
+                }
+                else if (encTypeString.Equals("DES"))
+                {
+                    suppEncType = Interop.KERB_ETYPE.des_cbc_md5;
+                }
+            }
+            else
+            {
+                suppEncType = encType;
+            }
+            if (arguments.ContainsKey("/principaltype")) {
+                principalType = arguments["/principaltype"]; 
             }
 
             if (arguments.ContainsKey("/createnetonly"))
@@ -203,11 +250,7 @@ namespace Rubeus.Commands
                 Console.WriteLine("\r\n[X] You must supply a user name!\r\n");
                 return;
             }
-            if (String.IsNullOrEmpty(domain))
-            {
-                domain = System.DirectoryServices.ActiveDirectory.Domain.GetCurrentDomain().Name;
-            }
-            if (String.IsNullOrEmpty(hash) && String.IsNullOrEmpty(certificate))
+            if (String.IsNullOrEmpty(hash) && String.IsNullOrEmpty(certificate) && !nopreauth)
             {
                 Console.WriteLine("\r\n[X] You must supply a /password, /certificate or a [/des|/rc4|/aes128|/aes256] hash!\r\n");
                 return;
@@ -227,10 +270,29 @@ namespace Rubeus.Commands
                     Console.WriteLine("[X] Using /opsec but not using /enctype:aes256, to force this behaviour use /force");
                     return;
                 }
-                if (String.IsNullOrEmpty(certificate))
-                    Ask.TGT(user, domain, hash, encType, outfile, ptt, dc, luid, true, opsec, servicekey, changepw, pac, proxyUrl);
+                if (nopreauth)
+                {
+                    try
+                    {
+                        Ask.NoPreAuthTGT(user, domain, hash, encType, dc, outfile, ptt, luid, true, true, proxyUrl, service, suppEncType, opsec, principalType);
+                    }
+                    catch (KerberosErrorException ex)
+                    {
+                        KRB_ERROR error = ex.krbError;
+                        try
+                        {
+                            Console.WriteLine("\r\n[X] KRB-ERROR ({0}) : {1}: {2}\r\n", error.error_code, (Interop.KERBEROS_ERROR)error.error_code, error.e_text);
+                        }
+                        catch
+                        {
+                            Console.WriteLine("\r\n[X] KRB-ERROR ({0}) : {1}\r\n", error.error_code, (Interop.KERBEROS_ERROR)error.error_code);
+                        }
+                    }
+                }
+                else if (String.IsNullOrEmpty(certificate))
+                    Ask.TGT(user, domain, hash, encType, outfile, ptt, dc, luid, true, opsec, servicekey, changepw, pac, proxyUrl, service, suppEncType, principalType);
                 else
-                    Ask.TGT(user, domain, certificate, password, encType, outfile, ptt, dc, luid, true, verifyCerts, servicekey, getCredentials, proxyUrl);
+                    Ask.TGT(user, domain, certificate, password, encType, outfile, ptt, dc, luid, true, verifyCerts, servicekey, getCredentials, proxyUrl, service, changepw, principalType);
 
                 return;
             }

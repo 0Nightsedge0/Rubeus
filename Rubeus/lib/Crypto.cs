@@ -1,11 +1,9 @@
 ﻿using System;
 using System.Linq;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.ComponentModel;
 
-namespace Rubeus
-{
+namespace Rubeus {
     public class Crypto
     {
         public static void ComputeAllKerberosPasswordHashes(string password, string userName = "", string domainName = "")
@@ -14,12 +12,12 @@ namespace Rubeus
 
             Console.WriteLine("[*] Input password             : {0}", password);
 
-            string salt = String.Format("{0}{1}", domainName.ToUpper(), userName);
+            string salt = String.Format("{0}{1}", domainName.ToUpperInvariant(), userName);
 
             // special case for computer account salts
             if (userName.EndsWith("$"))
             {
-                salt = String.Format("{0}host{1}.{2}", domainName.ToUpper(), userName.TrimEnd('$').ToLower(), domainName.ToLower());
+                salt = String.Format("{0}host{1}.{2}", domainName.ToUpperInvariant(), userName.TrimEnd('$').ToLowerInvariant(), domainName.ToLowerInvariant());
             }
 
             if (!String.IsNullOrEmpty(userName) && !String.IsNullOrEmpty(domainName))
@@ -124,6 +122,10 @@ namespace Rubeus
         {
             Interop.KERB_ECRYPT pCSystem;
             IntPtr pCSystemPtr;
+
+            if (eType == Interop.KERB_ETYPE.aes256_gcm_ghash_credguard)
+                throw new ArgumentException("Cannot decrypt Credential Guard blobs");
+
             
             // locate the crypto system
             int status = Interop.CDLocateCSystem(eType, out pCSystemPtr);
@@ -163,6 +165,9 @@ namespace Rubeus
             Interop.KERB_ECRYPT pCSystem;
             IntPtr pCSystemPtr;
 
+            if (eType == Interop.KERB_ETYPE.aes256_gcm_ghash_credguard)
+                throw new ArgumentException("Cannot encrypt Credential Guard blobs");
+
             // locate the crypto system
             int status = Interop.CDLocateCSystem(eType, out pCSystemPtr);
             pCSystem = (Interop.KERB_ECRYPT)Marshal.PtrToStructure(pCSystemPtr, typeof(Interop.KERB_ECRYPT));
@@ -192,6 +197,20 @@ namespace Rubeus
             pCSystemFinish(ref pContext);
 
             return output;
+        }
+
+        public static string FormDESHash(string stCypherHex, byte[] knownPlain)
+        {
+            byte[] IV = Helpers.StringToByteArray(stCypherHex.Substring(32, 16));
+            byte[] firstBlock = Helpers.StringToByteArray(stCypherHex.Substring(48, 16));
+
+            byte[] xoredIV = new byte[IV.Length];
+            for (int i = 0; i < IV.Length; i++)
+            {
+                xoredIV[i] = (byte)(knownPlain[i] ^ IV[i]);
+            }
+
+            return string.Format("{0}:{1}", Helpers.ByteArrayToString(firstBlock), Helpers.ByteArrayToString(xoredIV));
         }
     }
 }

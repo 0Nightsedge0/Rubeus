@@ -64,12 +64,14 @@ namespace Rubeus
                         break;
                     case 2:
                         // sequence of pa-data
-                        foreach(AsnElt pad in s.Sub) {
-                            padata.Add(new PA_DATA(pad.Sub[0]));
-                        }                                                   
+                        int i;
+                        for (i = 0; i < s.Sub[0].Sub.Length; i++)
+                        {
+                            padata.Add(new PA_DATA(s.Sub[0].Sub[i]));
+                        }                                          
                         break;
                     case 3:
-                        crealm = Encoding.ASCII.GetString(s.Sub[0].GetOctetString());
+                        crealm = Encoding.UTF8.GetString(s.Sub[0].GetOctetString());
                         break;
                     case 4:
                         cname = new PrincipalName(s.Sub[0]);

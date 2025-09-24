@@ -28,7 +28,7 @@ namespace Rubeus
             addr_type = Interop.HostAddressType.ADDRTYPE_NETBIOS;
 
             // setup padding
-            Int32 numSpaces = 8 - (hostName.Length % 8);
+            Int32 numSpaces = 16 - (hostName.Length % 16);
             hostName = hostName.PadRight(hostName.Length + numSpaces);
 
             addr_string = hostName.ToUpper();
@@ -40,7 +40,7 @@ namespace Rubeus
             addr_type = atype;
 
             // setup padding
-            Int32 numSpaces = 8 - (address.Length % 8);
+            Int32 numSpaces = 16 - (address.Length % 16);
             address = address.PadRight(address.Length + numSpaces);
 
             addr_string = address.ToUpper();
@@ -56,7 +56,7 @@ namespace Rubeus
                         addr_type = (Interop.HostAddressType)s.Sub[0].GetInteger();
                         break;
                     case 1:
-                        addr_string = Encoding.ASCII.GetString(s.Sub[0].GetOctetString());
+                        addr_string = Encoding.UTF8.GetString(s.Sub[0].GetOctetString());
                         break;
                     default:
                         break;

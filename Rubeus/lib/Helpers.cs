@@ -28,13 +28,15 @@ namespace Rubeus
             {
                 yield return text;
             }
-
-            for (int i = 0; i < partCount; i++)
+            else
             {
-                var index = i * partLength;
-                var lengthLeft = Math.Min(partLength, text.Length - index);
-                var line = text.Substring(index, lengthLeft);
-                yield return line;
+                for (int i = 0; i < partCount; i++)
+                {
+                    var index = i * partLength;
+                    var lengthLeft = Math.Min(partLength, text.Length - index);
+                    var line = text.Substring(index, lengthLeft);
+                    yield return line;
+                }
             }
         }
 
@@ -120,12 +122,32 @@ namespace Rubeus
             return returnDate;
         }
 
+        public static Interop.PRINCIPAL_TYPE StringToPrincipalType(string name) {
+
+            switch (name) {
+                case "principal":
+                    return Interop.PRINCIPAL_TYPE.NT_PRINCIPAL;
+                case "x500":
+                    return Interop.PRINCIPAL_TYPE.NT_X500_PRINCIPAL;
+                case "enterprise":
+                    return Interop.PRINCIPAL_TYPE.NT_ENTERPRISE;
+                case "srv_xhost":
+                    return Interop.PRINCIPAL_TYPE.NT_SRV_XHST;
+                case "srv_host":
+                    return Interop.PRINCIPAL_TYPE.NT_SRV_HST;
+                case "srv_inst":
+                    return Interop.PRINCIPAL_TYPE.NT_SRV_INST;
+                default:
+                    throw new ArgumentException($"name argument with value {name} is not supported");
+            }
+        }
+
         #endregion
 
 
-            #region Token Helpers
+        #region Token Helpers
 
-            public static bool IsHighIntegrity()
+        public static bool IsHighIntegrity()
         {
             // returns true if the current process is running with adminstrative privs in a high integrity context
             WindowsIdentity identity = WindowsIdentity.GetCurrent();
@@ -196,34 +218,27 @@ namespace Rubeus
         public static LUID GetCurrentLUID()
         {
             // helper that returns the current logon session ID by using GetTokenInformation w/ TOKEN_INFORMATION_CLASS
-
-            var TokenInfLength = 0;
             var luid = new LUID();
 
-            // first call gets lenght of TokenInformation to get proper struct size
-            var Result = Interop.GetTokenInformation(WindowsIdentity.GetCurrent().Token, Interop.TOKEN_INFORMATION_CLASS.TokenStatistics, IntPtr.Zero, TokenInfLength, out TokenInfLength);
-
-            var TokenInformation = Marshal.AllocHGlobal(TokenInfLength);
-
-            // second call actually gets the information
-            Result = Interop.GetTokenInformation(WindowsIdentity.GetCurrent().Token, Interop.TOKEN_INFORMATION_CLASS.TokenStatistics, TokenInformation, TokenInfLength, out TokenInfLength);
+            bool Result;
+            Interop.TOKEN_STATISTICS TokenStats = new Interop.TOKEN_STATISTICS();
+            int TokenInfLength;
+            Result = Interop.GetTokenInformation(WindowsIdentity.GetCurrent().Token, Interop.TOKEN_INFORMATION_CLASS.TokenStatistics, out TokenStats, Marshal.SizeOf(TokenStats), out TokenInfLength);
 
             if (Result)
             {
-                var TokenStatistics = (Interop.TOKEN_STATISTICS)Marshal.PtrToStructure(TokenInformation, typeof(Interop.TOKEN_STATISTICS));
-                luid = new LUID(TokenStatistics.AuthenticationId);
+                luid = new LUID(TokenStats.AuthenticationId);
             }
             else
             {
                 var lastError = Interop.GetLastError();
                 Console.WriteLine("[X] GetTokenInformation error: {0}", lastError);
-                Marshal.FreeHGlobal(TokenInformation);
             }
 
             return luid;
         }
 
-        public static LUID CreateProcessNetOnly(string commandLine, bool show = false, string username = null, string domain = null, string password = null)
+        public static LUID CreateProcessNetOnly(string commandLine, bool show = false, string username = null, string domain = null, string password = null, byte[] kirbiBytes = null)
         {
             // creates a hidden process with random /netonly credentials,
             //  displayng the process ID and LUID, and returning the LUID
@@ -252,7 +267,8 @@ namespace Rubeus
             Console.WriteLine("[*] Password        : {0}", password);
 
             // 0x00000002 == LOGON_NETCREDENTIALS_ONLY
-            if (!Interop.CreateProcessWithLogonW(username, domain, password, 0x00000002, commandLine, String.Empty, 0, 0, null, ref si, out pi))
+            // 4 == CREATE_SUSPENDED.
+            if (!Interop.CreateProcessWithLogonW(username, domain, password, 0x00000002, null, commandLine, 4, 0, Environment.CurrentDirectory, ref si, out pi))
             {
                 var lastError = Interop.GetLastError();
                 Console.WriteLine("[X] CreateProcessWithLogonW error: {0}", lastError);
@@ -263,8 +279,8 @@ namespace Rubeus
             Console.WriteLine("[+] ProcessID       : {0}", pi.dwProcessId);
 
             var hToken = IntPtr.Zero;
-            // TOKEN_QUERY == 0x0008
-            var success = Interop.OpenProcessToken(pi.hProcess, 0x0008, out hToken);
+            // TOKEN_QUERY == 0x0008, TOKEN_DUPLICATE == 0x0002
+            var success = Interop.OpenProcessToken(pi.hProcess, 0x000A, out hToken);
             if (!success)
             {
                 var lastError = Interop.GetLastError();
@@ -272,20 +288,43 @@ namespace Rubeus
                 return new LUID();
             }
 
-            var TokenInfLength = 0;
+            if (kirbiBytes != null)
+            {
+                IntPtr hDupToken = IntPtr.Zero;
+                success = Interop.DuplicateToken(hToken, 2, ref hDupToken);
+                if (!success)
+                {
+                    Console.WriteLine("[!] CreateProcessNetOnly() - DuplicateToken failed!");
+                    return new LUID();
+                }
+
+                try
+                {
+                    success = Interop.ImpersonateLoggedOnUser(hDupToken);
+                    if (!success)
+                    {
+                        Console.WriteLine("[!] CreateProcessNetOnly() - ImpersonateLoggedOnUser failed!");
+                        return new LUID();
+                    }
+                    LSA.ImportTicket(kirbiBytes, new LUID());
+                }
+                finally
+                {
+                    Interop.RevertToSelf();
+                    // clean up the handles we created
+                    Interop.CloseHandle(hDupToken);
+                }
+            }
+            Interop.ResumeThread(pi.hThread);
+
             bool Result;
-
-            // first call gets lenght of TokenInformation to get proper struct size
-            Result = Interop.GetTokenInformation(hToken, Interop.TOKEN_INFORMATION_CLASS.TokenStatistics, IntPtr.Zero, TokenInfLength, out TokenInfLength);
-
-            var TokenInformation = Marshal.AllocHGlobal(TokenInfLength);
-
-            // second call actually gets the information
-            Result = Interop.GetTokenInformation(hToken, Interop.TOKEN_INFORMATION_CLASS.TokenStatistics, TokenInformation, TokenInfLength, out TokenInfLength);
+            Interop.TOKEN_STATISTICS TokenStats = new Interop.TOKEN_STATISTICS();
+            int TokenInfLength;
+            Result = Interop.GetTokenInformation(hToken, Interop.TOKEN_INFORMATION_CLASS.TokenStatistics, out TokenStats, Marshal.SizeOf(TokenStats), out TokenInfLength);
+            Interop.CloseHandle(hToken);
 
             if (Result)
             {
-                var TokenStats = (Interop.TOKEN_STATISTICS)Marshal.PtrToStructure(TokenInformation, typeof(Interop.TOKEN_STATISTICS));
                 luid = new LUID(TokenStats.AuthenticationId);
                 Console.WriteLine("[+] LUID            : {0}", luid);
             }
@@ -293,13 +332,9 @@ namespace Rubeus
             {
                 var lastError = Interop.GetLastError();
                 Console.WriteLine("[X] GetTokenInformation error: {0}", lastError);
-                Marshal.FreeHGlobal(TokenInformation);
                 Interop.CloseHandle(hToken);
                 return new LUID();
             }
-
-            Marshal.FreeHGlobal(TokenInformation);
-            Interop.CloseHandle(hToken);
 
             return luid;
         }
@@ -497,7 +532,16 @@ namespace Rubeus
                     // default action convert to string
                     else
                     {
-                        ActiveDirectoryObject.Add(attribute, result.Attributes[attribute].GetValues(typeof(string))[0]);
+                        var values = result.Attributes[attribute].GetValues(typeof(string));
+                        string attributeValue;
+                        // check if property has empty value
+                        if(values.Length > 0) {
+                            attributeValue = values[0].ToString();
+                        } else {
+                            // if so, return empty string
+                            attributeValue = "";
+                        }
+                        ActiveDirectoryObject.Add(attribute, attributeValue);
                     }
                 }
 
@@ -552,7 +596,16 @@ namespace Rubeus
                     // default action convert to string
                     else
                     {
-                        ActiveDirectoryObject.Add(attribute, result.Properties[attribute][0].ToString());
+                        var values = result.Properties[attribute];
+                        string attributeValue;
+                        // check if property has empty value
+                        if(values.Count > 0) {
+                            attributeValue = values[0].ToString();
+                        } else {
+                            // if so, return empty string
+                            attributeValue = "";
+                        }
+                        ActiveDirectoryObject.Add(attribute, attributeValue);
                     }
                 }
 
@@ -564,4 +617,5 @@ namespace Rubeus
 
         #endregion
     }
+
 }
