@@ -28,6 +28,9 @@ namespace Rubeus.Commands
         private string outfile = "";
         private uint verbose = 0;
         private bool saveTickets = true;
+        private string[] validusernames = null;
+        private string[] validpasswords = null;
+        private bool check_enctype = false;
 
         protected class BruteArgumentException : ArgumentException
         {
@@ -48,8 +51,16 @@ namespace Rubeus.Commands
                 IBruteforcerReporter consoleReporter = new BruteforceConsoleReporter(
                     this.outfile, this.verbose, this.saveTickets);
 
+                bool success = false;
                 Bruteforcer bruter = new Bruteforcer(this.domain, this.dc, consoleReporter);
-                bool success = bruter.Attack(this.usernames, this.passwords);
+                if (check_enctype)
+                {
+                    success = bruter.Attack_v2(this.usernames, this.passwords, this.validusernames[0], this.validpasswords[0]);
+                }
+                else
+                {
+                    success = bruter.Attack(this.usernames, this.passwords);
+                }
                 if (success)
                 {
                     if (!String.IsNullOrEmpty(this.outfile))
@@ -76,6 +87,12 @@ namespace Rubeus.Commands
 
         private void ParseArguments(Dictionary<string, string> arguments)
         {
+            this.ParseCheckEncType(arguments);
+            if (this.check_enctype)
+            {
+                this.ParseValidUsers(arguments);
+                this.ParseValidPasswords(arguments);
+            }
             this.ParseDomain(arguments);
             this.ParseOU(arguments);
             this.ParseDC(arguments);
@@ -86,6 +103,7 @@ namespace Rubeus.Commands
             this.ParseVerbose(arguments);
             this.ParseSaveTickets(arguments);
         }
+
 
         private void ParseDomain(Dictionary<string, string> arguments)
         {
@@ -164,6 +182,30 @@ namespace Rubeus.Commands
             }
         }
 
+        private void ParseValidPasswords(Dictionary<string, string> arguments)
+        {
+            if (arguments.ContainsKey("/validpassword"))
+            {
+                this.validpasswords = new string[] { arguments["/validpassword"] };
+            }
+            else
+            {
+                throw new BruteArgumentException(
+                    "[X] You must supply a validpassword! Use /validpassword:<password>");
+            }
+        }
+        private void ParseValidUsers(Dictionary<string, string> arguments)
+        {
+            if (arguments.ContainsKey("/validuser"))
+            {
+                this.validusernames = new string[] { arguments["/validuser"] };
+            }
+            else
+            {
+                throw new BruteArgumentException(
+                    "[X] You must supply a validuser! Use /validuser:<username>");
+            }
+        }
         private void ParseUsers(Dictionary<string, string> arguments)
         {
             if (arguments.ContainsKey("/users"))
@@ -194,6 +236,14 @@ namespace Rubeus.Commands
             if (arguments.ContainsKey("/verbose"))
             {
                 this.verbose = 2;
+            }
+        }
+
+        private void ParseCheckEncType(Dictionary<string, string> arguments)
+        {
+            if (arguments.ContainsKey("/checkenctype"))
+            {
+                this.check_enctype = true;
             }
         }
 
