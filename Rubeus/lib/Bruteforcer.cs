@@ -65,6 +65,11 @@ namespace Rubeus
             bool success = false;
             // check enctype first
             Interop.KERB_ETYPE enctype = CheckSupportedEtype(validusername, validpassword);
+            if (enctype == Interop.KERB_ETYPE.old_exp)
+            {
+                Console.WriteLine("[!] Error: No supported encryption type found!");
+                return false;
+            }
 
             foreach (string password in passwords)
             {
