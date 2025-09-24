@@ -31,6 +31,10 @@ namespace Rubeus.Commands
         private string[] validusernames = null;
         private string[] validpasswords = null;
         private bool check_enctype = false;
+        // delay and jitter by praetorian-thacien
+        private int delay = 0;
+        private int jitter = 0;
+
 
         protected class BruteArgumentException : ArgumentException
         {
@@ -55,11 +59,11 @@ namespace Rubeus.Commands
                 Bruteforcer bruter = new Bruteforcer(this.domain, this.dc, consoleReporter);
                 if (check_enctype)
                 {
-                    success = bruter.Attack_v2(this.usernames, this.passwords, this.validusernames[0], this.validpasswords[0]);
+                    success = bruter.Attack_v2(this.usernames, this.passwords, this.validusernames[0], this.validpasswords[0], this.delay, this.jitter);
                 }
                 else
                 {
-                    success = bruter.Attack(this.usernames, this.passwords);
+                    success = bruter.Attack(this.usernames, this.passwords, this.delay, this.jitter);
                 }
                 if (success)
                 {
@@ -102,8 +106,49 @@ namespace Rubeus.Commands
             this.ParseOutfile(arguments);
             this.ParseVerbose(arguments);
             this.ParseSaveTickets(arguments);
+            this.ParseDelay(arguments);
+            this.ParseJitter(arguments);
+        }
+        private void ParseDelay(Dictionary<string, string> arguments)
+        {
+            if (arguments.ContainsKey("/delay"))
+            {
+                try
+                {
+                    this.delay = Int32.Parse(arguments["/delay"]);
+                }
+                catch
+                {
+                    Console.WriteLine("[X] Delay must be an integer.");
+                }
+                if (delay < 100)
+                {
+                    Console.WriteLine("[!] WARNING: Delay is in milliseconds! Please enter a value > 100.");
+                    return;
+                }
+            }
         }
 
+        private void ParseJitter(Dictionary<string, string> arguments)
+        {
+            if (arguments.ContainsKey("/jitter"))
+            {
+                try
+                {
+                    this.jitter = Int32.Parse(arguments["/jitter"]);
+                }
+                catch
+                {
+                    Console.WriteLine("[X] Jitter must be an integer between 1-100.");
+                    return;
+                }
+                if (this.jitter <= 0 || this.jitter > 100)
+                {
+                    Console.WriteLine("[X] Jitter must be between 1-100.");
+                    return;
+                }
+            }
+        }
 
         private void ParseDomain(Dictionary<string, string> arguments)
         {
@@ -500,7 +545,3 @@ namespace Rubeus.Commands
 
     }
 }
-
-
-
-
