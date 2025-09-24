@@ -385,6 +385,11 @@ namespace Rubeus.Commands
                     krbError.error_code, (Interop.KERBEROS_ERROR)krbError.error_code);
         }
 
+        public void ReportInvalidPassword(string domain, string username, string password)
+        {
+            Console.WriteLine("[-] Invaild Password user => {0}:{1}", username, password);
+        }
+
 
         private void WriteUserPasswordToFile(string username, string password)
         {
